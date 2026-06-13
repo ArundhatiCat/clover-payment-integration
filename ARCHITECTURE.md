@@ -1,194 +1,323 @@
 # Architecture & Technical Design
 
-This document explains how the Clover Payment Integration is designed, why specific decisions were made, and how this system would evolve in a production environment.
+**Project:** Clover Payment Integration  
+**Author:** Arundhati Rajendra  
+**Stack:** Node.js · Express · Vanilla JS · Clover REST API · OAuth2  
+
+---
+
+## Problem Statement
+
+Payment integrations are deceptively complex. The surface requirement is simple — "accept a payment" — but the implementation involves authentication flows, API orchestration, error recovery, security boundaries, and audit trails. This document explains every architectural decision made, the tradeoffs considered, and how this system would evolve in production.
 
 ---
 
 ## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  BROWSER                                                         │
-│                                                                  │
-│  index.html          style.css           app.js                 │
-│  (payment form)      (styling)           (OAuth + fetch logic)  │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ HTTP
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  NODE.JS + EXPRESS (Backend)                                     │
-│                                                                  │
-│  server.js                    cloverClient.js                   │
-│  ├── GET  /auth               ├── createOrder()                 │
-│  ├── GET  /oauth/callback     ├── addLineItem()                 │
-│  ├── POST /api/pay            ├── getTenders()                  │
-│  └── GET  /api/auth-status    ├── payForOrder()                 │
-│                               └── getPaymentStatus()            │
-│                                                                  │
-│  transactions.log             .env                              │
-│  (local audit trail)          (secrets — never committed)       │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ HTTPS
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  CLOVER SANDBOX API                                              │
-│                                                                  │
-│  OAuth2 Server               REST API                           │
-│  /oauth/v2/authorize         /v3/merchants/{mId}/orders         │
-│  /oauth/v2/token             /v3/merchants/{mId}/line_items     │
-│                              /v3/merchants/{mId}/tenders        │
-│                              /v3/merchants/{mId}/payments       │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  BROWSER (Frontend)                                               │
+│                                                                   │
+│  index.html            style.css           app.js                │
+│  ─────────────         ─────────           ──────────────────    │
+│  Payment form UI       Styling             OAuth redirect +       │
+│  3 screens:                                fetch logic            │
+│  • Connect                                                        │
+│  • Pay                                                            │
+│  • Result                                                         │
+└────────────────────────────┬─────────────────────────────────────┘
+                             │ HTTP (never calls Clover directly)
+                             ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  NODE.JS + EXPRESS (Backend)                                      │
+│                                                                   │
+│  server.js                      cloverClient.js                  │
+│  ─────────────────              ────────────────────             │
+│  Routing + orchestration        Clover API layer                 │
+│  ├── GET  /auth                 ├── createOrder()                │
+│  ├── GET  /oauth/callback       ├── addLineItem()                │
+│  ├── GET  /api/auth-status      ├── getTenders()                 │
+│  ├── POST /api/pay              ├── payForOrder()                │
+│  └── GET  /api/transactions     └── getPaymentStatus()           │
+│                                                                   │
+│  transactions.log               .env                             │
+│  ──────────────────             ────                             │
+│  Append-only audit trail        Secrets (never committed)        │
+└────────────────────────────┬─────────────────────────────────────┘
+                             │ HTTPS
+                             ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  CLOVER SANDBOX API                                               │
+│                                                                   │
+│  OAuth2 Server                  REST Payment API                 │
+│  ───────────────                ─────────────────────────────    │
+│  /oauth/v2/authorize            /v3/merchants/{mId}/             │
+│  /oauth/v2/token                  ├── orders                     │
+│                                   ├── orders/{id}/line_items     │
+│                                   ├── tenders                    │
+│                                   ├── orders/{id}/payments       │
+│                                   └── payments/{id}              │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+**The most important design rule:** The frontend never calls Clover directly. Every request goes through our backend. This keeps credentials server-side and gives us a single place to handle errors, logging, and validation.
 
 ---
 
 ## OAuth2 Flow
 
 ```
-User          Frontend        Backend              Clover
- │                │               │                   │
- │  Click Connect │               │                   │
- │───────────────▶│               │                   │
- │                │  GET /auth    │                   │
- │                │──────────────▶│                   │
- │                │               │  Redirect to      │
- │                │               │  /oauth/v2/authorize
- │                │               │──────────────────▶│
- │◀──────────────────────────────────────────────────│
- │  Clover login page shown                           │
- │                │               │                   │
- │  Log in + select merchant      │                   │
- │──────────────────────────────────────────────────▶│
- │                │               │                   │
- │                │               │◀──────────────────│
- │                │               │  ?code=XXXX       │
- │                │               │                   │
- │                │               │  POST /oauth/v2/token
- │                │               │──────────────────▶│
- │                │               │◀──────────────────│
- │                │               │  access_token     │
- │                │               │                   │
- │                │◀──────────────│                   │
- │                │  /?auth=success                   │
- │◀───────────────│               │                   │
- │  Payment form unlocks          │                   │
+User              Frontend            Backend                Clover
+  │                   │                   │                     │
+  │  1. Click         │                   │                     │
+  │  "Connect"        │                   │                     │
+  │──────────────────▶│                   │                     │
+  │                   │  GET /auth        │                     │
+  │                   │──────────────────▶│                     │
+  │                   │                   │  Redirect to        │
+  │                   │                   │  /oauth/v2/authorize│
+  │                   │                   │────────────────────▶│
+  │◀──────────────────────────────────────────────────────────-│
+  │  2. Clover login page shown to user                         │
+  │                   │                   │                     │
+  │  3. User logs in  │                   │                     │
+  │  + selects        │                   │                     │
+  │  merchant         │                   │                     │
+  │────────────────────────────────────────────────────────────▶│
+  │                   │                   │                     │
+  │                   │                   │◀────────────────────│
+  │                   │                   │  4. ?code=XXXX      │
+  │                   │                   │  (one-time code)    │
+  │                   │                   │                     │
+  │                   │                   │  POST /oauth/v2/token
+  │                   │                   │────────────────────▶│
+  │                   │                   │◀────────────────────│
+  │                   │                   │  5. access_token    │
+  │                   │                   │  (stored in memory) │
+  │                   │◀──────────────────│                     │
+  │                   │  6. Redirect      │                     │
+  │                   │  /?auth=success   │                     │
+  │◀──────────────────│                   │                     │
+  │  7. Payment form  │                   │                     │
+  │  unlocks          │                   │                     │
 ```
 
-**Why this matters:** The `client_secret` and `access_token` never reach the browser. The frontend only knows "authenticated: true/false" — it never sees the actual credentials.
+**Why authorization code flow and not implicit flow?**
+The implicit flow sends the token directly to the browser — simpler but insecure. The authorization code flow sends a one-time code that only the backend can exchange for a token. The `client_secret` never leaves the server.
+
+---
+
+## Payment Sequence
+
+```
+User enters amount + description → clicks Pay
+                │
+                ▼
+    ┌───────────────────────┐
+    │   Frontend Validation  │
+    │   • amount > 0         │
+    │   • description filled │
+    └───────────┬───────────┘
+                │
+                ▼ POST /api/pay
+    ┌───────────────────────┐
+    │   Backend Validation   │
+    │   • amount > 0         │
+    │   • description filled │
+    │   • token exists       │
+    └───────────┬───────────┘
+                │
+                ▼
+    ┌───────────────────────────────────────┐
+    │  Step 1: createOrder()                 │
+    │  POST /v3/merchants/{mId}/orders       │
+    │  → Clover creates an order container   │
+    │  ← returns { id: orderId }             │
+    └───────────────────┬───────────────────┘
+                        │
+                        ▼
+    ┌──────────────────────────────────────────────────┐
+    │  Step 2: addLineItem()                            │
+    │  POST /v3/merchants/{mId}/orders/{id}/line_items  │
+    │  { name: "Test Product", price: 1000 }  ← cents  │
+    │  → adds what was purchased to the order           │
+    └───────────────────┬──────────────────────────────┘
+                        │
+                        ▼
+    ┌──────────────────────────────────────────────┐
+    │  Step 3: getTenders()                         │
+    │  GET /v3/merchants/{mId}/tenders              │
+    │  → fetch available payment methods            │
+    │  → select external_payment tender dynamically │
+    └───────────────────┬──────────────────────────┘
+                        │
+                        ▼
+    ┌──────────────────────────────────────────────────────┐
+    │  Step 4: payForOrder()                                │
+    │  POST /v3/merchants/{mId}/orders/{id}/payments        │
+    │  { amount: 1000, tender: { id: tenderId } }           │
+    │  → processes the payment                              │
+    │  ← returns { id: paymentId }                          │
+    └───────────────────┬──────────────────────────────────┘
+                        │
+                        ▼
+    ┌──────────────────────────────────────────────┐
+    │  Step 5: getPaymentStatus()                   │
+    │  GET /v3/merchants/{mId}/payments/{paymentId} │
+    │  → confirms final payment result              │
+    │  ← returns { result: "SUCCESS" }              │
+    └───────────────────┬──────────────────────────┘
+                        │
+                        ▼
+    ┌──────────────────────────────────────────────┐
+    │  Step 6: logTransaction()                     │
+    │  Append to transactions.log                   │
+    │  { orderId, paymentId, amount, result,        │
+    │    description, timestamp }                   │
+    └───────────────────┬──────────────────────────┘
+                        │
+                        ▼
+            Return to frontend:
+    { success, orderId, paymentId, amount, result }
+                        │
+                        ▼
+            Display to user:
+    ✓ green card (SUCCESS) or ✗ red card (FAILURE)
+```
 
 ---
 
 ## Technology Decisions
 
-### Node.js + Express
+### Why Node.js + Express
 
-This app is an **API proxy** — it receives a request, calls Clover, and returns a result. Node.js is the best fit for this because:
+This app is an **I/O-bound API proxy**. It receives a request, makes sequential calls to Clover, and returns a result. It doesn't do heavy computation.
 
-- Non-blocking I/O handles concurrent requests without spawning threads
-- Native JSON — no serialization libraries needed
-- Express setup takes minutes vs Spring Boot's boilerplate
-- The async/await pattern maps cleanly to sequential API calls (create order → add item → pay)
+Node.js is purpose-built for this pattern:
 
-Python would also work. Java/Spring Boot is excellent for large enterprise systems but introduces unnecessary complexity for a focused integration like this.
+| Factor | Node.js | Python | Java/Spring Boot |
+|--------|---------|--------|-----------------|
+| I/O model | Non-blocking, event-driven | Blocking by default | Thread-per-request |
+| JSON handling | Native | Native | Jackson library |
+| Setup time | ~2 minutes | ~5 minutes | ~15 minutes |
+| Best for | API proxying, I/O | Data processing | Enterprise systems |
+| Async syntax | async/await native | asyncio (added later) | CompletableFuture |
 
-### Vanilla JavaScript (not React)
+**What I gave up:** Node.js is not ideal for CPU-intensive work. If this app needed to process large datasets or do heavy computation, Python or Java would be better choices.
 
-Three reasons:
+### Why Vanilla JavaScript over React
 
-1. The assignment lists "HTML/CSS + basic JS" as the recommended frontend
-2. This is a three-screen app — connect, pay, result. A component framework adds complexity without adding value
-3. No build step means any evaluator can run it instantly — `node server.js` and open a browser
+| Factor | Vanilla JS | React |
+|--------|-----------|-------|
+| Build tools | None — open browser and run | Requires Node, npm, build step |
+| Evaluator setup | Zero friction | Multiple steps |
+| App complexity | 3 screens, 1 form | 3 screens, 1 form |
+| Assignment spec | "HTML/CSS + basic JS" | Over-engineered |
+| Bundle size | ~5KB | ~150KB+ |
 
-### Axios over Fetch
+**What I gave up:** React's component model and state management would be valuable if this UI grew. For a 3-screen app it adds complexity without benefit.
+
+### Why Axios over Native Fetch
 
 ```javascript
-// fetch — does NOT throw on 4xx/5xx
+// fetch — silent failure on 4xx/5xx
 const res = await fetch('/api/pay', options);
-if (!res.ok) throw new Error('failed'); // manual check required every time
+if (!res.ok) throw new Error('failed'); // you must check manually every time
 
 // axios — throws automatically on error responses
-const res = await axios.post('/api/pay', data); // throws on 4xx/5xx
+const res = await axios.post('/api/pay', data); // 4xx/5xx throws immediately
 ```
 
-Axios also makes it straightforward to add request interceptors later — useful for automatic token refresh in production.
+**Additional benefit:** Axios supports request/response interceptors. In production, a single interceptor can handle token refresh automatically across all API calls — no per-call logic needed.
 
-### Full OAuth2 Code Flow (not API token shortcut)
+### Why cloverClient.js is separate from server.js
 
-There are two ways to "implement OAuth2":
-
-| Approach | What it actually is | Correct? |
-|----------|-------------------|---------|
-| Paste token in .env and use it | Bypasses OAuth entirely | ❌ |
-| Full redirect → code → token exchange | Real OAuth2 | ✅ |
-
-This app does the real thing. The user is redirected to Clover's login, approves the app, and the backend exchanges the authorization code for a token. This is how OAuth2 is meant to work.
-
-### Separating cloverClient.js from server.js
+This is the most important structural decision in the codebase.
 
 ```javascript
-// server.js — handles HTTP, validation, orchestration
+// WITHOUT separation — business logic buried in API details
+app.post('/api/pay', async (req, res) => {
+  const orderRes = await axios.post(
+    `https://sandbox.dev.clover.com/v3/merchants/ABC123/orders`,
+    {}, { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const lineItemRes = await axios.post(
+    `https://sandbox.dev.clover.com/v3/merchants/ABC123/orders/${orderRes.data.id}/line_items`,
+    { name: desc, price: amt },
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  // ... 50 more lines of this
+});
+
+// WITH separation — clean orchestration
 app.post('/api/pay', async (req, res) => {
   const order = await createOrder(accessToken);
   await addLineItem(accessToken, order.id, description, amountInCents);
   const payment = await payForOrder(accessToken, order.id, amountInCents);
   const status = await getPaymentStatus(accessToken, order.id, payment.id);
 });
-
-// cloverClient.js — handles Clover API, nothing else
-async function createOrder(accessToken) {
-  return axios.post(`${BASE_URL}/v3/merchants/${MERCHANT_ID}/orders`, {}, {
-    headers: { Authorization: `Bearer ${accessToken}` }
-  });
-}
 ```
 
-This separation means:
-- `cloverClient.js` can be unit tested by mocking Axios responses
-- Switching payment providers only requires changing `cloverClient.js`
-- `server.js` reads as business logic, not API implementation details
+**Benefits:**
+- `cloverClient.js` can be unit tested by mocking Axios — no real API calls needed
+- Switching from Clover to Stripe only requires changing `cloverClient.js`
+- `server.js` reads as a business flow, not an API implementation
 
 ---
 
 ## Security Design
 
-### Secrets never reach the browser
+### The security boundary
 
 ```
-What the browser knows:        What the backend knows:
-- authenticated: true/false    - client_secret
-- orderId                      - access_token
-- paymentId                    - merchant_id
-- result: SUCCESS/FAIL
+What the browser knows:          What only the backend knows:
+────────────────────────         ────────────────────────────
+authenticated: true/false        CLOVER_CLIENT_SECRET
+orderId                          access_token
+paymentId                        CLOVER_MERCHANT_ID
+result: SUCCESS/FAIL
+amount
+description
 ```
 
-The frontend calls `/api/pay` — it never calls Clover directly.
+**The rule:** Sensitive values never cross the backend boundary. The frontend calls our `/api/pay` endpoint. Our backend calls Clover. The browser never touches Clover directly.
+
+### Defense in depth — validation on two layers
+
+```
+Frontend validates → catches user mistakes early, fast feedback
+Backend validates  → catches malicious requests that bypass UI
+```
+
+Both layers check: amount > 0, description not empty. The backend additionally checks token existence.
 
 ### Credentials never enter version control
 
 ```
-.gitignore
-├── .env              ← real credentials
-├── *.log             ← transaction data
-└── node_modules/     ← dependencies
+Committed to Git:          Never committed:
+─────────────────          ────────────────
+.env.example               .env
+README.md                  transactions.log
+ARCHITECTURE.md            node_modules/
+package.json
 ```
 
-`.env.example` is committed — it documents what variables are needed without exposing values.
+`.env.example` documents what's needed without exposing real values.
 
-### Input validated on both layers
-
-The frontend validates before sending. The backend validates independently before any API call. This prevents direct API abuse that bypasses the UI.
-
-### Token expiry handled automatically
+### Token expiry — automatic recovery
 
 ```javascript
-if (error.response?.status === 401) {
-  accessToken = null; // clear the expired token
-  return res.status(401).json({ 
-    error: 'Session expired. Please login again.' 
-  });
+catch (error) {
+  if (error.response?.status === 401) {
+    accessToken = null;           // clear invalid token
+    return res.status(401).json({ // tell frontend to re-auth
+      error: 'Session expired. Please login again.'
+    });
+  }
 }
 ```
+
+No manual intervention needed. The UI shows a clear message and the user re-authenticates.
 
 ---
 
@@ -196,13 +325,17 @@ if (error.response?.status === 401) {
 
 ### Challenge 1 — Sandbox rejects native card tenders
 
-**Error received:**
+**Error:**
 ```
 "We currently don't allow you to add native credit or debit payments,
 please use an external tender type such as 'external payment'"
 ```
 
-**Solution:** Instead of hardcoding a tender type, the app fetches the merchant's available tenders dynamically via `GET /v3/merchants/{mId}/tenders` and selects the external payment tender. This makes the code correct in both sandbox and production.
+**First instinct:** Hardcode `com.clover.tender.external_payment` as the tender type.
+
+**Problem with that:** The tender object requires an `id` field — not just a label. The ID is different per merchant.
+
+**Solution:** Fetch the merchant's tenders dynamically and find the right one:
 
 ```javascript
 const tendersData = await getTenders(accessToken);
@@ -211,42 +344,78 @@ const externalTender = tendersData.elements.find(
 ) || tendersData.elements[0];
 ```
 
-### Challenge 2 — Wrong payment status endpoint
+**Why this is better:** Works correctly for any merchant in both sandbox and production — not just our test merchant.
 
-**Error received:**
+### Challenge 2 — Wrong endpoint for payment status
+
+**Error:** `405 GET not allowed`
+
+**Root cause:** Used the order-scoped URL pattern:
 ```
-405 GET not allowed
+GET /v3/merchants/{mId}/orders/{orderId}/payments/{paymentId}  ← wrong
 ```
 
-**Root cause:** Used `/v3/merchants/{mId}/orders/{orderId}/payments/{paymentId}` — which doesn't support GET.
+**Solution:** Use the standalone payments endpoint:
+```
+GET /v3/merchants/{mId}/payments/{paymentId}  ← correct
+```
 
-**Solution:** Corrected to the standalone payment endpoint: `GET /v3/merchants/{mId}/payments/{paymentId}`.
+**Lesson:** Clover's API has both collection endpoints (scoped to an order) and resource endpoints (standalone). Always verify which HTTP methods each supports.
 
-### Challenge 3 — OAuth token exchange format
+### Challenge 3 — OAuth v2 token exchange format
 
-Clover's v2 OAuth uses a different format than legacy OAuth. The token exchange requires `client_id`, `client_secret`, and `code` in the POST body — not as query parameters.
+Clover's v2 OAuth token exchange requires credentials in the **request body** — not as query parameters or Basic Auth headers like some other OAuth implementations.
 
 ```javascript
-const response = await axios.post(`${BASE_URL}/oauth/v2/token`, {
-  client_id: CLIENT_ID,
-  client_secret: CLIENT_SECRET,
-  code: code,
-});
+// Wrong — query parameters
+POST /oauth/v2/token?client_id=X&client_secret=Y&code=Z
+
+// Correct — request body
+POST /oauth/v2/token
+{ client_id: X, client_secret: Y, code: Z }
 ```
+
+---
+
+## Our Backend API
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| GET | `/auth` | Initiates OAuth2 redirect to Clover | No |
+| GET | `/oauth/callback` | Exchanges auth code for access token | No |
+| GET | `/api/auth-status` | Returns `{ authenticated: true/false }` | No |
+| POST | `/api/pay` | Full payment flow — order, line item, payment | Yes |
+| GET | `/api/transactions` | Transaction history from local log | No |
+
+---
+
+## Clover API Calls
+
+| # | Method | Clover Endpoint | Purpose |
+|---|--------|----------------|---------|
+| 1 | GET | `/oauth/v2/authorize` | Start OAuth flow |
+| 2 | POST | `/oauth/v2/token` | Exchange code for access token |
+| 3 | POST | `/v3/merchants/{mId}/orders` | Create order |
+| 4 | POST | `/v3/merchants/{mId}/orders/{id}/line_items` | Add line item |
+| 5 | GET | `/v3/merchants/{mId}/tenders` | Fetch payment methods |
+| 6 | POST | `/v3/merchants/{mId}/orders/{id}/payments` | Process payment |
+| 7 | GET | `/v3/merchants/{mId}/payments/{id}` | Get payment status |
 
 ---
 
 ## Production Roadmap
 
-### Phase 1 — Persistent token storage
+### What needs to change before this goes to production
 
-**Problem:** Token lives in memory. Server restart loses authentication.
+**1. Persistent token storage**
+
+Current implementation stores the token in server memory. A server restart loses authentication.
 
 ```javascript
-// Current
+// Current — lost on restart
 let accessToken = null;
 
-// Production — store per merchant in database
+// Production — persisted per merchant
 await db.tokens.upsert({
   merchantId,
   accessToken: encrypt(access_token),
@@ -255,9 +424,9 @@ await db.tokens.upsert({
 });
 ```
 
-### Phase 2 — Automatic token refresh
+**2. Automatic token refresh**
 
-**Problem:** Expired tokens require user to manually re-authenticate.
+Current implementation requires the user to re-authenticate when a token expires. Production should handle this transparently.
 
 ```javascript
 async function getValidToken(merchantId) {
@@ -269,20 +438,35 @@ async function getValidToken(merchantId) {
 }
 ```
 
-### Phase 3 — Rate limiting
+**3. Rate limiting**
+
+Without rate limiting, the `/api/pay` endpoint can be abused.
 
 ```javascript
 const rateLimit = require('express-rate-limit');
 app.use('/api/pay', rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 100,
   message: 'Too many payment requests. Please try again later.'
 }));
 ```
 
-### Phase 4 — Webhook support
+**4. Idempotency keys**
 
-Instead of polling for payment status, register a Clover webhook to receive real-time notifications:
+Prevent duplicate payments if the user double-clicks or a network retry occurs.
+
+```javascript
+app.post('/api/pay', async (req, res) => {
+  const idempotencyKey = req.headers['x-idempotency-key'];
+  const existing = await db.payments.findOne({ idempotencyKey });
+  if (existing) return res.json(existing); // return cached result
+  // proceed with payment...
+});
+```
+
+**5. Webhook support**
+
+Instead of polling for payment status synchronously, register a Clover webhook for real-time notifications.
 
 ```javascript
 app.post('/webhooks/clover', (req, res) => {
@@ -294,35 +478,45 @@ app.post('/webhooks/clover', (req, res) => {
 });
 ```
 
-### Phase 5 — Observability
+**6. Structured logging and observability**
 
-- Structured logging with correlation IDs (trace a single payment across all 5 API calls)
-- Error alerting for payment failures above a threshold
-- Dashboard for transaction volume, success rate, average processing time
+```javascript
+// Current — console.log
+console.log('Payment processed:', payment.id);
+
+// Production — structured with correlation ID
+logger.info({
+  event: 'payment_processed',
+  traceId: req.headers['x-trace-id'],
+  orderId: order.id,
+  paymentId: payment.id,
+  amount: amountInCents,
+  durationMs: Date.now() - startTime
+});
+```
 
 ---
 
-## What Would Change at Scale
+## Scale Considerations
 
-| Concern | Current approach | At scale |
+| Concern | Current Approach | At Scale |
 |---------|-----------------|----------|
-| Token storage | Server memory | Encrypted database per merchant |
-| Transaction log | Flat file | PostgreSQL with indexes |
-| Concurrency | Single process | Clustered with PM2 or containerized |
-| API calls | Sequential | Parallelize order creation + tender fetch |
-| Auth | Single merchant | Multi-tenant with per-merchant token management |
+| Token storage | Server memory | Redis or encrypted PostgreSQL |
+| Transaction log | Append-only flat file | PostgreSQL with indexes + query API |
+| Concurrency | Single Node.js process | PM2 cluster or Kubernetes pods |
+| API calls | Sequential (6 calls per payment) | Parallelize order creation + tender fetch |
+| Auth | Single merchant | Multi-tenant — token per merchant ID |
 | Reliability | No retries | Exponential backoff on Clover API failures |
+| Security | HTTPS via hosting | WAF + DDoS protection + fraud detection |
+| Monitoring | Console logs | Datadog / New Relic with payment SLA alerts |
 
 ---
 
-## API Calls Reference
+## What I Would Do Differently With More Time
 
-| # | Method | Endpoint | Purpose |
-|---|--------|----------|---------|
-| 1 | GET | `/oauth/v2/authorize` | Start OAuth flow |
-| 2 | POST | `/oauth/v2/token` | Exchange code for access token |
-| 3 | POST | `/v3/merchants/{mId}/orders` | Create order |
-| 4 | POST | `/v3/merchants/{mId}/orders/{id}/line_items` | Add line item |
-| 5 | GET | `/v3/merchants/{mId}/tenders` | Fetch available payment methods |
-| 6 | POST | `/v3/merchants/{mId}/orders/{id}/payments` | Process payment |
-| 7 | GET | `/v3/merchants/{mId}/payments/{id}` | Get payment status |
+1. **Unit tests for cloverClient.js** — mock Axios responses and test each function in isolation
+2. **Integration tests** — test the full payment flow against Clover sandbox automatically
+3. **Docker containerization** — `docker-compose up` instead of manual setup
+4. **Environment-specific configs** — separate sandbox and production configurations
+5. **OpenAPI/Swagger documentation** — auto-generated API docs from route definitions
+6. **Frontend transaction history page** — display `GET /api/transactions` results in the UI
