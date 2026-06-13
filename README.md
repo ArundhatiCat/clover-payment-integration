@@ -74,6 +74,8 @@ clover-payment-integration/
 
 > **Note for evaluators:** Sandbox credentials are provided in the submission email so you can run this without creating a Clover account.
 
+> **Note for evaluators:** Sandbox credentials are provided in the submission email so you can run this without creating a Clover account.
+
 ### 1. Clone and install
 
 ```bash

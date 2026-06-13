@@ -13,6 +13,7 @@ app.use(express.static(path.join(__dirname, '../frontend')));
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/index.html'));
 });
+
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.CLOVER_BASE_URL;
 const CLIENT_ID = process.env.CLOVER_CLIENT_ID;
@@ -136,6 +137,31 @@ app.post('/api/pay', async (req, res) => {
 // Check auth status
 app.get('/api/auth-status', (req, res) => {
   res.json({ authenticated: !!accessToken });
+});
+
+// Get transaction history
+app.get('/api/transactions', (req, res) => {
+  try {
+    const logPath = path.join(__dirname, 'transactions.log');
+    if (!fs.existsSync(logPath)) {
+      return res.json({ transactions: [] });
+    }
+    const lines = fs.readFileSync(logPath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => {
+        const [timestamp, ...rest] = line.split(' - ');
+        const data = JSON.parse(rest.join(' - '));
+        return {
+          timestamp,
+          ...data,
+          amount: `$${(data.amount / 100).toFixed(2)}`,
+        };
+      });
+    res.json({ transactions: lines.reverse() });
+  } catch (error) {
+    res.status(500).json({ error: 'Could not read transaction history' });
+  }
 });
 
 app.listen(PORT, () => {
