@@ -1,51 +1,38 @@
 # Clover Payment Integration
 
-> A full-stack payment application built on the Clover REST API — featuring complete OAuth2 authentication, order management, and real-time payment processing.
+A web-based checkout application that integrates with the [Clover REST API](https://docs.clover.com/dev/reference/api-reference-overview) to process payments.
 
-Built as part of a Full Stack AI Engineer Intern technical assessment. Every requirement from the spec is implemented, including the optional frontend UI.
-
----
-
-## It Works — See For Yourself
-
-| Step 1: Connect | Step 2: Pay | Step 3: Success |
-|----------------|-------------|-----------------|
-| ![Form](./screenshots/01-payment-form.png) | ![Filled](./screenshots/03-payment-filled.png) | ![Success](./screenshots/04-payment-success.png) |
+Users authenticate via OAuth2, enter a payment amount and description, and initiate a transaction — all through a clean browser interface backed by a Node.js server.
 
 ---
 
-## What This App Does
+## Requirements Covered
 
-A merchant opens the app, authenticates via Clover OAuth2, enters an amount and product description, and processes a real sandbox payment — all in under 30 seconds.
-
-Under the hood:
-- Full OAuth2 authorization code flow (not API key shortcuts)
-- Creates a Clover order, adds a line item, processes payment, fetches status
-- Logs every transaction locally with timestamp and payment ID
-- Handles all error cases — expired tokens, invalid input, API failures
-
----
-
-## Architecture
-
-![System Architecture](./screenshots/architecture-diagram.svg)
-
-### How OAuth2 Works in This App
-
-![OAuth Flow](./screenshots/oauth-flow-diagram.svg)
+| Requirement | Details | Status |
+|-------------|---------|--------|
+| OAuth2 authentication | Full authorization code flow — redirect, code exchange, token storage | ✅ |
+| Create order | `POST /v3/merchants/{mId}/orders` | ✅ |
+| Add line item | Product name + price added to order | ✅ |
+| Initiate payment | Processed via Clover payments API | ✅ |
+| Display payment status | Success or failure shown in UI with order ID and payment ID | ✅ |
+| Log transactions locally | Every payment appended to `transactions.log` with timestamp | ✅ |
+| Frontend UI *(optional — implemented)* | Amount field, description field, submit button, result screen | ✅ |
+| Error handling — failed requests | Input validation + Clover API error handling | ✅ |
+| Error handling — expired tokens | Token cleared automatically, user prompted to re-authenticate | ✅ |
+| Postman collection | All 4 endpoints documented and ready to test | ✅ |
 
 ---
 
-## Tech Stack & Why
+## Tech Stack
 
-| Layer | Choice | Why This Over Alternatives |
-|-------|--------|---------------------------|
-| Backend | Node.js + Express | Best fit for I/O-bound API proxying. Non-blocking, fast setup, native JSON |
-| Frontend | HTML + CSS + Vanilla JS | Assignment specifies "basic JS". No build tools = evaluator runs it instantly |
-| HTTP Client | Axios | Throws on 4xx/5xx unlike fetch. Cleaner headers. Future interceptor support |
-| Auth | OAuth2 v2 (full flow) | Implements the spec properly. Code → token exchange on backend keeps secrets safe |
+| Layer | Choice | Why |
+|-------|--------|-----|
+| Backend | Node.js + Express | Best fit for API proxying — non-blocking I/O, native JSON, fast setup |
+| Frontend | HTML + CSS + Vanilla JS | Assignment specifies basic JS. No build tools — runs on any machine instantly |
+| HTTP Client | Axios | Auto-throws on 4xx/5xx errors unlike fetch. Cleaner header management |
+| Authentication | OAuth2 v2 (full code flow) | Proper implementation — secrets never reach the browser |
 | Config | dotenv | Industry standard. `.env.example` documents all required variables |
-| Logging | fs.appendFileSync | Zero dependencies. Meets "log transaction details locally" requirement directly |
+| Logging | Node.js `fs` module | Zero dependencies. Directly meets "log transaction details locally" requirement |
 
 ---
 
@@ -53,32 +40,39 @@ Under the hood:
 
 ```
 clover-payment-integration/
+│
 ├── backend/
-│   ├── server.js           # Express server — routes, OAuth, payment orchestration
-│   ├── cloverClient.js     # Clover API layer — all 5 API calls isolated here
-│   ├── package.json
-│   └── .env.example        # Required environment variables (template)
+│   ├── server.js         # Express server — all routes and payment orchestration
+│   ├── cloverClient.js   # Every Clover API call isolated here — testable and swappable
+│   ├── .env.example      # Environment variable template
+│   └── package.json
+│
 ├── frontend/
-│   ├── index.html          # Single-page payment UI
-│   ├── style.css           # Clean, responsive styling
-│   └── app.js              # OAuth redirect handling + payment fetch logic
+│   ├── index.html        # Payment form UI
+│   ├── style.css         # Styling
+│   └── app.js            # OAuth redirect handling + payment fetch logic
+│
 ├── postman/
 │   └── Clover_Payment_Integration.postman_collection.json
-├── screenshots/
-├── ARCHITECTURE.md         # Deep dive: decisions, tradeoffs, production path
+│
+├── screenshots/          # UI screenshots and architecture diagrams
+├── ARCHITECTURE.md       # Technical decisions, security design, production roadmap
 └── README.md
 ```
 
-**Key design decision:** All Clover API calls live in `cloverClient.js`, not scattered in `server.js`. This separation means the API layer can be tested, mocked, or swapped independently.
+> **Key design decision:** All Clover API calls live in `cloverClient.js` — completely separate from routing logic in `server.js`. This makes the API layer independently testable and easy to swap out.
 
 ---
 
-## Quick Start
+## Getting Started
 
 ### Prerequisites
+
 - Node.js v18+
-- Clover sandbox account ([create one here](https://www.clover.com/global-developer-home/public/create-account))
+- A [Clover sandbox account](https://www.clover.com/global-developer-home/public/create-account)
 - Postman
+
+> **Note for evaluators:** Sandbox credentials are provided in the submission email so you can run this without creating a Clover account.
 
 ### 1. Clone and install
 
@@ -94,7 +88,7 @@ npm install
 cp .env.example .env
 ```
 
-Fill in your Clover sandbox credentials:
+Open `.env` and fill in your credentials:
 
 ```env
 CLOVER_BASE_URL=https://sandbox.dev.clover.com
@@ -104,67 +98,87 @@ CLOVER_CLIENT_SECRET=your_client_secret
 PORT=3000
 ```
 
-### 3. Set up Clover sandbox app
+### 3. Clover sandbox setup
 
 In the [Clover Developer Dashboard](https://www.clover.com/global-developer-home):
 
-- Create a new **Web** app
-- Site URL → `http://localhost:3000`
-- Alternate Launch Path → `/oauth/callback`
-- Permissions → Payments (R/W), Orders (W), Inventory (W), Merchant (R)
-- Create a test merchant and install the app on it
+1. Create a new **Web** app
+2. Set **Site URL** to `http://localhost:3000`
+3. Set **Alternate Launch Path** to `/oauth/callback`
+4. Enable permissions: Payments (R/W), Orders (W), Inventory (W), Merchant (R)
+5. Create a test merchant and install the app on it
 
 ### 4. Run
 
 ```bash
 node server.js
-# Server running on http://localhost:3000
 ```
+
+Open `http://localhost:3000` in your browser.
+
+---
+
+## How OAuth2 Works in This App
+
+This app implements the full OAuth2 authorization code flow — the standard way to securely connect a third-party app to a merchant's Clover account without exposing credentials.
+
+```
+1. User clicks "Connect with Clover"
+2. Browser redirects to Clover's login page
+3. User logs in and selects their merchant account
+4. Clover redirects back to /oauth/callback with a one-time authorization code
+5. Backend exchanges the code for an access token via POST /oauth/v2/token
+6. Token stored securely in server memory
+7. All subsequent Clover API calls use this token
+```
+
+The `client_secret` and `access_token` never reach the browser — they exist only on the backend.
 
 ---
 
 ## Payment Flow
 
-Every payment goes through 5 Clover API calls in sequence:
+Each payment triggers 5 sequential Clover API calls:
 
 ```
-POST /v3/merchants/{mId}/orders
-  → Create the order container
+1. POST /v3/merchants/{mId}/orders
+   → Create an order
 
-POST /v3/merchants/{mId}/orders/{orderId}/line_items
-  → Add what was purchased (name + price in cents)
+2. POST /v3/merchants/{mId}/orders/{orderId}/line_items
+   → Add the product name and price in cents
 
-GET  /v3/merchants/{mId}/tenders
-  → Fetch available payment methods dynamically
+3. GET  /v3/merchants/{mId}/tenders
+   → Fetch available payment methods for this merchant
 
-POST /v3/merchants/{mId}/orders/{orderId}/payments
-  → Process the payment using external tender (sandbox)
+4. POST /v3/merchants/{mId}/orders/{orderId}/payments
+   → Process the payment
 
-GET  /v3/merchants/{mId}/payments/{paymentId}
-  → Fetch final payment status
+5. GET  /v3/merchants/{mId}/payments/{paymentId}
+   → Confirm the final payment status
 ```
 
 ---
 
-## API Reference
+## API Endpoints
 
-| Method | Endpoint | Description | Body |
-|--------|----------|-------------|------|
-| GET | `/auth` | Start OAuth2 flow | — |
-| GET | `/oauth/callback` | Handle Clover redirect, store token | — |
-| GET | `/api/auth-status` | Check if authenticated | — |
-| POST | `/api/pay` | Process a payment | `{ amount, description }` |
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| GET | `/auth` | Starts the OAuth2 flow — redirects to Clover login | No |
+| GET | `/oauth/callback` | Receives auth code, exchanges for access token | No |
+| GET | `/api/auth-status` | Returns `{ authenticated: true/false }` | No |
+| POST | `/api/pay` | Processes a payment | Yes |
 
-**Example:**
+### POST /api/pay
 
-```bash
-curl -X POST http://localhost:3000/api/pay \
-  -H "Content-Type: application/json" \
-  -d '{"amount": 10.00, "description": "Test Product"}'
+**Request:**
+```json
+{
+  "amount": 10.00,
+  "description": "Test Product"
+}
 ```
 
 **Response:**
-
 ```json
 {
   "success": true,
@@ -180,25 +194,27 @@ curl -X POST http://localhost:3000/api/pay \
 
 ## Error Handling
 
-| Scenario | Status | Message |
-|----------|--------|---------|
-| Amount missing or zero | 400 | Invalid amount |
+| Scenario | HTTP Status | Message |
+|----------|-------------|---------|
+| Amount missing or zero | 400 | Invalid amount. Please enter a valid amount |
 | Description empty | 400 | Description is required |
-| Not authenticated | 401 | Not authenticated. Please login |
+| Not authenticated | 401 | Not authenticated. Please login with Clover first |
 | Token expired | 401 | Session expired. Please login again |
-| Clover API failure | 500 | Error details from Clover |
+| Clover API error | 500 | Error details returned from Clover |
 
-Token expiry clears the stored token automatically and prompts re-authentication.
+When a token expires, it is cleared from memory automatically and the user is prompted to re-authenticate — no manual intervention needed.
 
 ---
 
 ## Transaction Logging
 
-Every successful or failed payment attempt is appended to `backend/transactions.log`:
+Every payment attempt — successful or failed — is appended to `backend/transactions.log`:
 
 ```
 2026-06-13T02:34:21.000Z - {"orderId":"JJ677Z59K139Y","paymentId":"ZMFG1D73340AP","amount":1000,"description":"Test Product","result":"SUCCESS","timestamp":"2026-06-13T02:34:21.000Z"}
 ```
+
+Each entry contains: timestamp, order ID, payment ID, amount in cents, description, and result.
 
 ---
 
@@ -206,22 +222,45 @@ Every successful or failed payment attempt is appended to `backend/transactions.
 
 Import `postman/Clover_Payment_Integration.postman_collection.json`.
 
-**Test order:**
-1. Run **Check Auth Status** → should return `{ "authenticated": false }`
-2. Open browser → `http://localhost:3000` → Connect with Clover → complete OAuth
-3. Run **Check Auth Status** again → should return `{ "authenticated": true }`
-4. Run **Process Payment** → should return `{ "success": true, "result": "SUCCESS" }`
+**Recommended test sequence:**
+
+1. `GET /api/auth-status` — confirm `{ "authenticated": false }`
+2. Open `http://localhost:3000` in browser — complete OAuth flow
+3. `GET /api/auth-status` — confirm `{ "authenticated": true }`
+4. `POST /api/pay` — process a test payment, confirm `{ "result": "SUCCESS" }`
 
 ---
 
-## If I Had More Time
+## Screenshots
 
-- **Refresh token support** — auto-renew expired tokens without user re-login
-- **Persistent token storage** — survive server restarts using encrypted DB storage
-- **Transaction history page** — query and display past payments from the log
-- **Webhook receiver** — accept real-time payment events from Clover
-- **Rate limiting** — protect the `/api/pay` endpoint from abuse
-- **Unit tests** — test `cloverClient.js` functions with mocked Axios responses
+**Payment form:**
+
+![Payment Form](./screenshots/01-payment-form.png)
+
+**OAuth merchant selection:**
+
+![OAuth Flow](./screenshots/02-oauth-flow.png)
+
+**Payment form filled:**
+
+![Payment Filled](./screenshots/03-payment-filled.png)
+
+**Payment successful:**
+
+![Payment Success](./screenshots/04-payment-success.png)
+
+---
+
+## Further Reading
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for:
+
+- System architecture diagram
+- OAuth2 flow diagram
+- Technology decision rationale
+- Security design
+- Challenges encountered and how they were solved
+- Production improvement roadmap with code examples
 
 ---
 
